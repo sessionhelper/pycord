@@ -267,18 +267,32 @@ class PacketDecryptor:
         else:
             return nacl.secret.SecretBox(secret_key)
 
+    # Packet stats for monitoring
+    _dave_stats = {
+        "total": 0,
+        "success": 0,
+        "fail_known": 0,
+        "fail_infer": 0,
+        "fail_no_dave": 0,
+        "last_success_seq": -1,
+        "last_fail_seq": -1,
+        "last_report": 0,
+    }
+
     def decrypt_rtp(self, packet: RTPPacket) -> bytes:
+        import time
+
         state = self.client._connection
         dave = state.dave_session
 
         raw_payload = self._decryptor_rtp(packet)
+        stats = self._dave_stats
+        stats["total"] += 1
 
         if dave is not None and dave.ready:
             uid = state.ssrc_user_map.get(packet.ssrc)
 
             if not uid:
-                # SSRC -> user_id mapping not yet populated (race with member_connect).
-                # Try every user ID known to the DAVE session until one decrypts.
                 raw_payload = self._dave_infer_and_decrypt(
                     dave, state, packet, raw_payload
                 )
@@ -289,26 +303,49 @@ class PacketDecryptor:
                         davey.MediaType.audio,
                         raw_payload,
                     )
+                    stats["success"] += 1
+                    stats["last_success_seq"] = packet.sequence
                 except ValueError:
-                    # Known mapping failed — clear stale mapping and retry inference
-                    _log.warning(
-                        "DAVE: Decryption failed for known uid %s ssrc %s, retrying inference",
-                        uid,
-                        packet.ssrc,
-                    )
+                    stats["fail_known"] += 1
+                    stats["last_fail_seq"] = packet.sequence
                     state.ssrc_user_map.pop(packet.ssrc, None)
                     raw_payload = self._dave_infer_and_decrypt(
                         dave, state, packet, raw_payload
                     )
 
             packet.decrypted_data = raw_payload
-        else:  # e.g., stage channels
+        else:
+            stats["fail_no_dave"] += 1
             packet.decrypted_data = raw_payload
+
+        # Report stats every 5 seconds
+        now = time.monotonic()
+        if now - stats["last_report"] > 5:
+            total = stats["total"]
+            success = stats["success"]
+            rate = (success / total * 100) if total > 0 else 0
+            _log.warning(
+                "DAVE stats: %d/%d packets ok (%.0f%%) | fail_known=%d fail_infer=%d no_dave=%d | last_ok_seq=%d last_fail_seq=%d",
+                success,
+                total,
+                rate,
+                stats["fail_known"],
+                stats["fail_infer"],
+                stats["fail_no_dave"],
+                stats["last_success_seq"],
+                stats["last_fail_seq"],
+            )
+            stats["last_report"] = now
 
         return packet.decrypted_data or b""
 
     def _dave_infer_and_decrypt(self, dave, state, packet, raw_payload):
         """Try all known DAVE user IDs to decrypt a packet with unknown SSRC mapping."""
+        import time
+
+        stats = self._dave_stats
+        t0 = time.monotonic()
+
         for candidate_uid in dave.get_user_ids():
             try:
                 int_uid = int(candidate_uid)
@@ -317,22 +354,30 @@ class PacketDecryptor:
                     davey.MediaType.audio,
                     raw_payload,
                 )
-                # Successfully decrypted — cache the mapping
                 state.user_ssrc_map[int_uid] = packet.ssrc
                 state.ssrc_user_map[packet.ssrc] = int_uid
-                _log.debug(
-                    "DAVE: inferred ssrc %s -> user_id %s",
-                    packet.ssrc,
-                    int_uid,
-                )
+                stats["success"] += 1
+                stats["last_success_seq"] = packet.sequence
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                if elapsed_ms > 5:
+                    _log.warning(
+                        "DAVE: slow inference %.1fms ssrc %s -> uid %s",
+                        elapsed_ms,
+                        packet.ssrc,
+                        int_uid,
+                    )
                 return decrypted_audio
             except ValueError:
                 continue
 
-        _log.warning(
-            "DAVE: all user_ids failed decryption for ssrc %s seq %s",
+        stats["fail_infer"] += 1
+        stats["last_fail_seq"] = packet.sequence
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        _log.debug(
+            "DAVE: inference failed ssrc %s seq %s (%.1fms)",
             packet.ssrc,
             packet.sequence,
+            elapsed_ms,
         )
         return OPUS_SILENCE
 
