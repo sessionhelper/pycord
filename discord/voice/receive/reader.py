@@ -324,8 +324,19 @@ class PacketDecryptor:
             total = stats["total"]
             success = stats["success"]
             rate = (success / total * 100) if total > 0 else 0
+            # Get davey's internal stats
+            dave_info = ""
+            if dave is not None and dave.ready:
+                dave_info = f"epoch={dave.epoch}"
+                for uid in dave.get_user_ids():
+                    try:
+                        ds = dave.get_decryption_stats(int(uid))
+                        dave_info += f" | davey[{uid}]: ok={ds.successes} fail={ds.failures} pass={ds.passthroughs}"
+                    except Exception:
+                        pass
+
             _log.warning(
-                "DAVE stats: %d/%d packets ok (%.0f%%) | fail_known=%d fail_infer=%d no_dave=%d | last_ok_seq=%d last_fail_seq=%d",
+                "DAVE stats: %d/%d packets ok (%.0f%%) | fail_known=%d fail_infer=%d no_dave=%d | last_ok_seq=%d last_fail_seq=%d | %s",
                 success,
                 total,
                 rate,
@@ -334,6 +345,7 @@ class PacketDecryptor:
                 stats["fail_no_dave"],
                 stats["last_success_seq"],
                 stats["last_fail_seq"],
+                dave_info,
             )
             stats["last_report"] = now
 
