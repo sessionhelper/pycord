@@ -305,8 +305,14 @@ class PacketDecryptor:
                     )
                     stats["success"] += 1
                     stats["last_success_seq"] = packet.sequence
-                except ValueError:
+                except ValueError as e:
                     stats["fail_known"] += 1
+                    _log.warning(
+                        "DAVE: decrypt fail seq=%d ssrc=%d err=%s",
+                        packet.sequence,
+                        packet.ssrc,
+                        str(e)[:80],
+                    )
                     stats["last_fail_seq"] = packet.sequence
                     state.ssrc_user_map.pop(packet.ssrc, None)
                     raw_payload = self._dave_infer_and_decrypt(
