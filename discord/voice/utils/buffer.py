@@ -41,7 +41,7 @@ class JitterBuffer:
     _threshold: int = 10000
 
     def __init__(
-        self, max_size: int = 10, *, pref_size: int = 1, prefill: int = 1
+        self, max_size: int = 50, *, pref_size: int = 0, prefill: int = 0
     ) -> None:
         if max_size < 1:
             raise ValueError(f"max_size must be greater than 1, not {max_size}")

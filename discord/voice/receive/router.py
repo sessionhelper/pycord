@@ -68,6 +68,7 @@ class PacketRouter(threading.Thread):
     def feed_rtp(self, packet: RTPPacket) -> None:
         if packet.ssrc in self._dropped_ssrcs:
             _log.debug("Ignoring packet from dropped ssrc %s", packet.ssrc)
+            return
 
         with self._lock:
             decoder = self.get_decoder(packet.ssrc)

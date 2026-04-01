@@ -279,30 +279,9 @@ class PacketDecryptor:
             if not uid:
                 # SSRC -> user_id mapping not yet populated (race with member_connect).
                 # Try every user ID known to the DAVE session until one decrypts.
-                # This is ugly but I didn't manage to get it to work otherwise. If you have a better implementation,
-                # please open a PR.
-                for candidate_uid in dave.get_user_ids():
-                    try:
-                        int_uid = int(candidate_uid)
-                        decrypted_audio = dave.decrypt(
-                            int_uid,
-                            davey.MediaType.audio,
-                            raw_payload,
-                        )
-                        # Successfully decrypted - cache the mapping for next time
-                        self.client._connection.user_ssrc_map[int_uid] = packet.ssrc
-                        uid = int_uid
-                        raw_payload = decrypted_audio
-                        _log.debug(
-                            "DAVE: inferred ssrc %s -> user_id %s from decryption",
-                            packet.ssrc,
-                            uid,
-                        )
-                        break
-                    except ValueError:
-                        continue
-                else:
-                    raw_payload = OPUS_SILENCE
+                raw_payload = self._dave_infer_and_decrypt(
+                    dave, state, packet, raw_payload
+                )
             else:
                 try:
                     raw_payload = dave.decrypt(
@@ -311,19 +290,51 @@ class PacketDecryptor:
                         raw_payload,
                     )
                 except ValueError:
-                    # UnencryptedWhenPassthroughDisabled here is actually misleading, we can't passthrough,
-                    # it gives a corrupted stream.
-                    _log.debug(
-                        "DAVE: Decryption failed, falling back to OPUS_SILENCE",
-                        exc_info=True,
+                    # Known mapping failed — clear stale mapping and retry inference
+                    _log.warning(
+                        "DAVE: Decryption failed for known uid %s ssrc %s, retrying inference",
+                        uid,
+                        packet.ssrc,
                     )
-                    raw_payload = OPUS_SILENCE
+                    state.ssrc_user_map.pop(packet.ssrc, None)
+                    raw_payload = self._dave_infer_and_decrypt(
+                        dave, state, packet, raw_payload
+                    )
 
             packet.decrypted_data = raw_payload
         else:  # e.g., stage channels
             packet.decrypted_data = raw_payload
 
         return packet.decrypted_data or b""
+
+    def _dave_infer_and_decrypt(self, dave, state, packet, raw_payload):
+        """Try all known DAVE user IDs to decrypt a packet with unknown SSRC mapping."""
+        for candidate_uid in dave.get_user_ids():
+            try:
+                int_uid = int(candidate_uid)
+                decrypted_audio = dave.decrypt(
+                    int_uid,
+                    davey.MediaType.audio,
+                    raw_payload,
+                )
+                # Successfully decrypted — cache the mapping
+                state.user_ssrc_map[int_uid] = packet.ssrc
+                state.ssrc_user_map[packet.ssrc] = int_uid
+                _log.debug(
+                    "DAVE: inferred ssrc %s -> user_id %s",
+                    packet.ssrc,
+                    int_uid,
+                )
+                return decrypted_audio
+            except ValueError:
+                continue
+
+        _log.warning(
+            "DAVE: all user_ids failed decryption for ssrc %s seq %s",
+            packet.ssrc,
+            packet.sequence,
+        )
+        return OPUS_SILENCE
 
     def decrypt_rtcp(self, packet: bytes) -> bytes:
         data = self._decryptor_rtcp(packet)
