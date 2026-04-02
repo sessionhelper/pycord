@@ -74,24 +74,14 @@ class JitterBuffer:
 
     def _update_has_item(self) -> None:
         prefilled = self._prefill == 0
-        packet_ready = len(self._buffer) > self.pref_size
 
-        if not prefilled or not packet_ready:
+        if not prefilled or not self._buffer:
             self._has_item.clear()
             return
 
-        next_packet = self._buffer[0]
-        sequential = add_wrapped(self._last_tx_seq, 1) == next_packet.sequence
-        positive_seq = self._last_tx_seq >= 0
-
-        if (
-            (sequential and positive_seq)
-            or not positive_seq
-            or len(self._buffer) >= self.max_size
-        ):
-            self._has_item.set()
-        else:
-            self._has_item.clear()
+        # Always release packets immediately — for recording, latency doesn't matter
+        # and waiting for sequential packets causes loss
+        self._has_item.set()
 
     def _cleanup(self) -> None:
         while len(self._buffer) > self.max_size:
